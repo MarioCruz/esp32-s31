@@ -17,6 +17,40 @@ CircuitPython board name: `espressif_esp32s31_korvo_1` (support added Oct 2026, 
   esp32-camera driver has no S31 target. Their BSP uses the newer esp_video framework instead.
   Watch for `CIRCUITPY_ESPCAMERA` being enabled for `esp32s31` in a future build.
 
+## About the alpha CircuitPython build
+
+This board runs **CircuitPython 11.0.0-alpha.2** (released 2026-10-21). Support for the ESP32-S31 and
+the Korvo-1 landed in CircuitPython on 2026-10-13, so this is the first and so far only tagged release
+that includes the board. Expect rough edges:
+
+- **Alpha means APIs and behaviour can change** between builds. Pin the version you flash (the image in
+  `firmware/` is checksummed) and re-test after upgrading.
+- **Not in this build for the S31** (from `ports/espressif/mpconfigport.mk` at the 11.0.0-alpha.2 tag):
+  - `wifi` and BLE ("No wifi or BLE yet"), so no web workflow, no `socketpool`, no `adafruit_requests`.
+  - `espcamera` ("Library doesn't support S31 yet").
+  - ADC calibration ("The IDF has no ADC calibration scheme for the S31 yet"): `analogio` readings are
+    uncalibrated, which affects the PLAY/SET/VOL buttons on the resistor ladder (GPIO42).
+  - `touchio` is flagged as unreliable ("Touch readings saturate at 65535 on every pad").
+  - `audioio` (built-in DAC) does not exist on this chip; audio goes through the ES8389 over I2S.
+- **No CIRCUITPY drive and no USB serial** is a board design fact, not an alpha limitation: the S31's only
+  USB port is wired to the USB-A host jack. The workflow here is the UART REPL plus `put.py` / `run.py`.
+- `I2SIn(..., external_clock=True)` raises `NotImplementedError` on the espressif port, so simultaneous
+  playback and recording is not possible yet.
+- Library `.mpy` files must come from the **11.x** bundle (mpy format 6). 9.x/10.x bundles fail with
+  "incompatible .mpy file".
+
+### Getting a newer build
+- Releases: https://circuitpython.org/board/espressif_esp32s31_korvo_1/ (once the site lists it) or
+  https://downloads.circuitpython.org/bin/espressif_esp32s31_korvo_1/en_US/
+- Every merged PR is built to the S3 bucket; list them with:
+  ```sh
+  curl -s "https://adafruit-circuit-python.s3.amazonaws.com/?prefix=bin/espressif_esp32s31_korvo_1/en_US/&list-type=2" \
+    | grep -oE "<Key>[^<]+" | sed 's/<Key>//' | tail -5
+  ```
+- Drop the new `.bin` into `firmware/`, update `firmware/SHA256SUMS`, run `./flash.sh` (it picks the
+  highest version), then re-run `./run.py audio_test.py` to confirm the codec driver still behaves.
+- Flashing erases the filesystem: push `lib/` and `code.py` again afterwards with `put.py`.
+
 ## One-time setup
 ```sh
 sudo usermod -aG uucp $USER     # serial port access on Arch; log out/in afterwards
