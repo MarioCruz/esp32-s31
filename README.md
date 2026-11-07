@@ -42,6 +42,8 @@ that includes the board. Expect rough edges:
 ### Getting a newer build
 - Releases: https://circuitpython.org/board/espressif_esp32s31_korvo_1/ (once the site lists it) or
   https://downloads.circuitpython.org/bin/espressif_esp32s31_korvo_1/en_US/
+- Board definition: https://github.com/adafruit/circuitpython/tree/main/ports/espressif/boards/espressif_esp32s31_korvo_1
+- Espressif user guide: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-korvo-1/user_guide.html
 - Every merged PR is built to the S3 bucket; list them with:
   ```sh
   curl -s "https://adafruit-circuit-python.s3.amazonaws.com/?prefix=bin/espressif_esp32s31_korvo_1/en_US/&list-type=2" \
@@ -107,8 +109,3 @@ Hardware facts that matter (all learned the hard way):
 - `put.py local [port] [remote]` copies a file (creates folders, CRC-verified, reloads only for code.py/boot.py).
 - `run.py script.py [port] [timeout]` runs a script on the board and streams its output; code.py is untouched.
 - `monitor.sh` opens the REPL.
-
-## Newer builds
-Release: https://downloads.circuitpython.org/bin/espressif_esp32s31_korvo_1/en_US/
-Every PR build lands in the S3 bucket `adafruit-circuit-python` under `bin/espressif_esp32s31_korvo_1/en_US/`.
-Docs: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s31/esp32-s31-korvo-1/user_guide.html
