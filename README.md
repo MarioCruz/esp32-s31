@@ -126,7 +126,7 @@ Hardware facts that matter (all learned the hard way):
 ## PixelDust sand demo (`sand.py`)
 Port of Adafruit's [PixelDust digital sand](https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython)
 (Metro RP2350 version) to this board: 3600 rainbow grains on a 200x120 grid at 4 px per grain, the
-Adafruit logo as an obstacle, 16-21 fps. Touch the screen and the sand falls toward your finger;
+Adafruit logo as an obstacle, 45-58 fps. Touch the screen and the sand falls toward your finger;
 with no finger, gravity slowly rotates. BOOT re-scatters.
 ```sh
 curl -L -o sand/mpy-cross https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-11.0.0-alpha.2.static
@@ -139,9 +139,12 @@ How it differs from the original, and why:
   pre-compiled** for `rv32imc`: this build cannot compile viper/native code on the device, but it does load
   native `.mpy` files (`CIRCUITPY_LOAD_NATIVE` is on for espressif). The mpy-cross must match the
   firmware version exactly (mpy format 6.3 here).
-- `picogame` (the original's renderer) is not in this build, so the kernels write straight into a
-  full-screen RGB565 `displayio.Bitmap` (768 KB, fine with 16 MB PSRAM) and `Bitmap.dirty()` marks the
-  rectangle `step()` reports. Drawing costs ~25 ms/frame; the viper step ~20-30 ms.
+- `picogame` (the original's renderer) is not in this build. The kernels paint straight into the LCD's
+  own framebuffer (`board.DISPLAY.framebuffer`, a writable RGB565 buffer whose 800-px row stride equals
+  the 200-cell grid at SCALE 4), then `framebuffer.refresh()` writes the CPU cache back (~0.1 ms).
+  Going through a `displayio.Bitmap` instead cost ~26 ms per frame and capped the demo near 20 fps.
+  displayio is kept out of the way with `auto_refresh = False` and an empty root group.
+- If the picture ever rolls (the dot-clock panel lost sync under heavy PSRAM traffic), press RST.
 - No accelerometer on this board, so the touch screen supplies the tilt vector.
 
 ## Tools

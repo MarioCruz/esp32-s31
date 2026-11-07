@@ -6,8 +6,8 @@ Port of Adafruit's "PixelDust digital sand for CircuitPython" (Metro RP2350 vers
   https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython
 Physics are the unmodified viper kernels in lib/sand_viper.mpy, compiled for this chip with
   mpy-cross -march=rv32imc sand/sand_viper.py -o lib/sand_viper.mpy
-Differences from the original: the picogame Scene/Canvas is replaced by a displayio Bitmap the
-kernels write into directly, and the accelerometer (this board has none) is replaced by the touch
+Differences from the original: the picogame Scene/Canvas is replaced by the LCD's own framebuffer,
+which the kernels paint directly (no displayio copy per frame), and the accelerometer (this board has none) is replaced by the touch
 screen: touch anywhere and the sand falls toward your finger. With no finger, gravity slowly
 rotates. BOOT re-scatters the sand.
 """
@@ -21,8 +21,8 @@ SCALE = 4                  # pixels per grain; 800x480 at 4 -> 200x120 cells
 FILL = 0.15                # fraction of cells holding a grain
 STRIPES = 6                # rainbow bands at start; 0 = scattered colours
 MAX_SPEED = 5              # cells per frame
-MAX_FPS = 45               # simulation steps per second
-REFRESH_EVERY = 1          # set to 2 if the picture ever rolls (halves the PSRAM traffic from refreshes)
+MAX_FPS = 60               # simulation steps per second (actual rate is limited by the physics step)
+TILT_GAIN = 2.0            # how fast gravity reaches 1 G as the finger moves away from the centre
 BACKGROUND_RGB = (0, 0, 0)
 LOGO_RGB = (255, 255, 255)
 LOGO_SCALE = 3             # logo cells per logo pixel (40x40 logo -> 120x120 cells)
@@ -38,21 +38,21 @@ screen_width, screen_height = display.width, display.height
 GRID_WIDTH, GRID_HEIGHT = screen_width // SCALE, screen_height // SCALE
 GRAIN_COUNT = int(GRID_WIDTH * GRID_HEIGHT * FILL)
 
-# -- display: one RGB565 bitmap the kernels write straight into --------------------------
+# -- display: paint straight into the panel's framebuffer ---------------------------------
+# board.DISPLAY is a FramebufferDisplay over a DotClockFramebuffer. That framebuffer is a writable
+# RGB565 buffer with an 800-pixel row stride, which is exactly the 200-cell grid at SCALE 4, so the
+# viper kernels can paint the screen directly and the per-frame displayio copy (~26 ms) disappears.
+# fb.refresh() only writes the CPU cache back so the LCD DMA sees the pixels.
 gc.collect()
-# Full-resolution RGB565 bitmap (768 KB in PSRAM) that the kernels paint SCALE x SCALE pixels per cell
-# into. A 1-px-per-cell bitmap scaled by displayio was tried: 10x slower refresh (270 ms).
-# The dot-clock panel streams its framebuffer from PSRAM and loses sync (the picture rolls) when
-# other PSRAM traffic gets heavy, so the screen is refreshed only every REFRESH_EVERY steps.
-bitmap = displayio.Bitmap(GRID_WIDTH * SCALE, GRID_HEIGHT * SCALE, 65536)
-root = displayio.Group()
-root.append(displayio.TileGrid(bitmap, pixel_shader=displayio.ColorConverter(input_colorspace=displayio.Colorspace.RGB565),
-                               x=(screen_width - GRID_WIDTH * SCALE) // 2, y=(screen_height - GRID_HEIGHT * SCALE) // 2))
-display.root_group = root
+fb = display.framebuffer
+if fb.width != GRID_WIDTH * SCALE or fb.height != GRID_HEIGHT * SCALE or fb.row_stride != 2 * fb.width or fb.first_pixel_offset:
+    raise RuntimeError("grid %dx%d at SCALE %d does not match framebuffer %dx%d" % (GRID_WIDTH, GRID_HEIGHT, SCALE, fb.width, fb.height))
+display.auto_refresh = False          # displayio must not redraw over our pixels
+display.root_group = displayio.Group()
+pixels = fb
 CELL_PX = SCALE
-display.auto_refresh = False
 
-# -- sand state: same layout as sand_viper.new(), but `pixels` is the bitmap ----------------
+# -- sand state: same layout as sand_viper.new(), but `pixels` is the LCD framebuffer -----------
 import array
 logo_w, logo_h = logo.WIDTH * LOGO_SCALE, logo.HEIGHT * LOGO_SCALE
 grid = bytearray(GRID_WIDTH * GRID_HEIGHT)
@@ -66,7 +66,6 @@ params[sand_viper.PARAM_BACKGROUND] = BACKGROUND_COLOR
 params[sand_viper.PARAM_RANDOM_STATE] = random.getrandbits(30)
 params[sand_viper.PARAM_JITTER_RANGE] = 1
 params[sand_viper.PARAM_MAX_SPEED] = int(MAX_SPEED * 256)
-pixels = bitmap
 
 
 def blend(coverage):
@@ -110,8 +109,7 @@ def scatter():
         for i in range(GRAIN_COUNT):
             grains[5 * i + 4] = rainbow(i / GRAIN_COUNT)
     sand_viper.place(grains, grid, pixels, params)
-    bitmap.dirty()
-    display.refresh()
+    fb.refresh()
 
 
 scatter()
@@ -128,7 +126,7 @@ def read_acceleration():
     if finger:
         fx = (finger[0] - screen_width / 2) / (screen_width / 2)     # -1 .. 1
         fy = (finger[1] - screen_height / 2) / (screen_height / 2)
-        mag = min(1.0, math.sqrt(fx * fx + fy * fy) * 1.5)
+        mag = min(1.0, math.sqrt(fx * fx + fy * fy) * TILT_GAIN)
         ang = math.atan2(fy, fx)
         ax, ay = math.cos(ang) * mag, math.sin(ang) * mag
         flat = 1.0 - mag
@@ -145,7 +143,7 @@ frame_ns = 1000000000 // MAX_FPS
 next_frame_ns = time.monotonic_ns()
 frames = step_ns = draw_ns = 0
 report_ns = next_frame_ns + 2000000000
-poll_every = 3
+poll_every = 2
 n = 0
 while True:
     n += 1
@@ -162,12 +160,9 @@ while True:
     params[sand_viper.PARAM_JITTER_RANGE] = jitter_range
 
     t0 = time.monotonic_ns()
-    if sand_viper.step(grains, grid, pixels, params):
-        bitmap.dirty(params[sand_viper.PARAM_DIRTY_LEFT] * SCALE, params[sand_viper.PARAM_DIRTY_TOP] * SCALE,
-                     params[sand_viper.PARAM_DIRTY_RIGHT] * SCALE, params[sand_viper.PARAM_DIRTY_BOTTOM] * SCALE)
+    sand_viper.step(grains, grid, pixels, params)     # paints moved grains straight into the framebuffer
     t1 = time.monotonic_ns()
-    if n % REFRESH_EVERY == 0:
-        display.refresh()
+    fb.refresh()                                       # cache write-back so the LCD DMA sees them
     t2 = time.monotonic_ns()
     frames += 1; step_ns += t1 - t0; draw_ns += t2 - t1
     if t2 >= report_ns:
