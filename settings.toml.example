@@ -1,0 +1,6 @@
+# NOTE: the 11.0.0-alpha.2 S31 build has no `wifi` module, so this does nothing yet.
+# Copy to settings.toml, fill in, push with ./put.py settings.toml. Enables the web workflow
+# (file editor + REPL in a browser at http://circuitpython.local or the board's IP).
+CIRCUITPY_WIFI_SSID = "your-ssid"
+CIRCUITPY_WIFI_PASSWORD = "your-password"
+CIRCUITPY_WEB_API_PASSWORD = "pick-a-password"
