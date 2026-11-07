@@ -90,9 +90,9 @@ BOOT_BUTTON = mcu.pin.GPIO61
 TOUCH_ADDRESS = 0x14          # GT1151/GT1158 on the LCD subboard
 
 
-def touch(flip_x=True, flip_y=False, swap_xy=False):
-    """GT1151 touch controller on the shared I2C bus, mapped to display pixels.
-    The SUB3 panel reports x mirrored relative to the 800x480 framebuffer, hence flip_x=True."""
+def touch(flip_x=False, flip_y=False, swap_xy=False):
+    """GT1151 touch controller on the shared I2C bus. The SUB3 panel's raw coordinates already match
+    the 800x480 framebuffer (verified: a tap on the left edge reports x~90), so no flips by default."""
     import gt1151
     return gt1151.GT1151(board.I2C(), TOUCH_ADDRESS, flip_x=flip_x, flip_y=flip_y, swap_xy=swap_xy)
 

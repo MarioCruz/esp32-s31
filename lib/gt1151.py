@@ -15,6 +15,7 @@ class GT1151:
         self.swap_xy, self.flip_x, self.flip_y = swap_xy, flip_x, flip_y
         self._buf = bytearray(1 + 8 * 5 + 2)
         self.last = []
+        self.raw = (0, 0)
 
     def _read(self, reg, buf):
         while not self.i2c.try_lock():
@@ -60,6 +61,7 @@ class GT1151:
             o = 1 + 8 * i
             x = buf[o + 1] | (buf[o + 2] << 8)
             y = buf[o + 3] | (buf[o + 4] << 8)
+            self.raw = (x, y)                              # last raw panel coordinates, for calibration
             if self.swap_xy:
                 x, y = y, x
             if self.flip_x:

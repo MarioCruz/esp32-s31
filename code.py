@@ -94,7 +94,7 @@ def clear():
     canvas.fill(0)
 
 
-tp = korvo1.touch()              # flip_x is the board default; add swap_xy/flip_y if still wrong
+tp = korvo1.touch()              # raw panel coords match the display; flags available if a panel differs
 pid, fw = tp.product_id()
 boot = korvo1.BootButton()
 ladder = korvo1.LadderButtons()
@@ -142,11 +142,11 @@ while True:
                     hit_t = time.monotonic()
                     r.pixel_shader[0] = 0xF1C40F
                     last_hit.text = "on-screen %s" % name
-                    print("on-screen button:", name)
+                    print("on-screen button:", name, "raw", tp.raw, "mapped", (x, y), "rect x %d..%d" % (bx, bx + bwid))
                     px[0] = (255, 160, 0)
                     on_button(name)
         if pts:
-            coords.text = "x=%d y=%d  (%d touch%s)" % (pts[0][1], pts[0][2], len(pts), "" if len(pts) == 1 else "es")
+            coords.text = "x=%d y=%d  raw %d,%d" % (pts[0][1], pts[0][2], tp.raw[0], tp.raw[1])
         elif active:
             pass
     if active and time.monotonic() - hit_t > 0.25:
