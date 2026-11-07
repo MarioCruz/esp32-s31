@@ -12,6 +12,7 @@ CircuitPython board name: `espressif_esp32s31_korvo_1` (support added Oct 2026, 
   `TX`(GPIO58)/`RX`(GPIO59), `DISPLAY` (800x480 panel), `USB_HOST_DATA_PLUS/MINUS`.
 - Audio codec is an ES8389 on I2C/I2S; CircuitPython defines no audio pins for it, so `lib/korvo1.py`
   carries the pin map and `lib/es8389.py` drives the codec (see "Audio" below).
+- Touch: GT1158 on the LCD subboard, driver in `lib/gt1151.py`. Ladder buttons: digital-only, see below.
 - Camera: **not possible in CircuitPython yet.** The `espcamera` module is compiled out for the S31
   ("Library doesn't support S31 yet" in `ports/espressif/mpconfigport.mk`) and Espressif's own
   esp32-camera driver has no S31 target. Their BSP uses the newer esp_video framework instead.
@@ -69,7 +70,8 @@ If auto-reset into download mode fails: hold **Boot**, press and release **RST**
 
 ## Files in this folder
 - `lib/` mirrors what is on the board's `/lib`: `neopixel.mpy` and `adafruit_display_text/` from the 11.x-mpy bundle (20261106).
-- `blink.py` needs no libraries. `code.py` is the display demo.
+- `blink.py` needs no libraries. `mic_meter.py` (stereo level meter) and `touch_demo.py` (touch canvas +
+  buttons) are the demos; `code.py` is whichever one is currently installed.
 
 ## First program
 ```sh
@@ -104,6 +106,21 @@ Hardware facts that matter (all learned the hard way):
   cannot share BCLK/LRCLK: play and record **one at a time**, not simultaneously.
 - `audiocore`, `audiomixer`, `audiomp3`, `synthio` are all built in, so MP3/WAV playback and synthesis work
   through `korvo1.Speaker`.
+
+## Touch screen and buttons
+```sh
+./put.py touch_demo.py /dev/ttyUSB0 code.py   # draw with your finger, on-screen PLAY/SET/VOL-/VOL+, BOOT clears
+```
+- **Touch**: the LCD subboard has a Goodix **GT1158** controller at I2C 0x14. `lib/gt1151.py` reads it
+  (`korvo1.touch()` returns it configured for the shared bus); `poll()` gives `(track_id, x, y, strength)`
+  for up to 5 fingers. If the dot lands mirrored or rotated, pass `swap_xy`/`flip_x`/`flip_y`.
+- **BOOT** (GPIO61): a normal GPIO, read with `keypad` via `korvo1.BootButton()`.
+- **PLAY / SET / VOL- / VOL+**: a resistor ladder on one ADC pin (GPIO42). This alpha has **no `analogio`
+  on the S31**, so `korvo1.LadderButtons()` can only tell three states apart from the digital level:
+  nothing, "PLAY/SET" (low-voltage pair) or "VOL-/VOL+" (mid-voltage pair). Direct register access is
+  not an option either (`memorymap` only exposes the RTC range). When a build enables `analogio`, the
+  per-button windows from Espressif's BSP are (mV): SET 244-444, PLAY 643-843, VOL- 1118-1318, VOL+ 1600-1800.
+  Until then the on-screen buttons in `touch_demo.py` are the practical replacement.
 
 ## Tools
 - `put.py local [port] [remote]` copies a file (creates folders, CRC-verified, reloads only for code.py/boot.py).

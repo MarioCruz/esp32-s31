@@ -1,145 +1,129 @@
-# Live stereo microphone level meter on the Korvo-1's 800x480 display.
-# Needs /lib/es8389.py, /lib/korvo1.py, /lib/adafruit_display_text/.
-import array, math, time
+# Touch + buttons demo for the ESP32-S31-Korvo-1 with the 800x480 touch LCD.
+# - draw on the canvas with your finger (up to 5 touches, colour per finger)
+# - four on-screen buttons stand in for PLAY / SET / VOL- / VOL+
+# - BOOT button clears the canvas; the physical ladder buttons show their detected group
+# Needs /lib/gt1151.py, /lib/korvo1.py, /lib/adafruit_display_text/.
+import time
 import board, displayio, terminalio, vectorio, neopixel
 from adafruit_display_text import label
 import korvo1
 
-try:
-    from ulab import numpy as np
-except ImportError:
-    np = None
-
-RATE = 16000
-CHUNK = RATE // 20                     # 50 ms per update
-MIN_DB, MAX_DB = -60, 0
 display = board.DISPLAY
 W, H = display.width, display.height
 px = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3)
 
-# ---------- layout ----------
 root = displayio.Group()
 display.root_group = root
 
 
-def pal(color):
-    p = displayio.Palette(1); p[0] = color; return p
+def pal(*colors):
+    p = displayio.Palette(len(colors))
+    for i, c in enumerate(colors):
+        p[i] = c
+    return p
 
 
 def rect(x, y, w, h, color):
-    r = vectorio.Rectangle(pixel_shader=pal(color), width=max(1, w), height=max(1, h), x=x, y=y)
-    root.append(r); return r
+    r = vectorio.Rectangle(pixel_shader=pal(color), width=w, height=h, x=x, y=y)
+    root.append(r)
+    return r
 
 
-def text(s, x, y, color=0xFFFFFF, scale=2, anchor=(0, 0.5)):
+def text(s, x, y, color=0xFFFFFF, scale=2, anchor=(0.5, 0.5)):
     t = label.Label(terminalio.FONT, text=s, color=color, scale=scale)
-    t.anchor_point = anchor; t.anchored_position = (x, y)
-    root.append(t); return t
+    t.anchor_point = anchor
+    t.anchored_position = (x, y)
+    root.append(t)
+    return t
 
 
-rect(0, 0, W, H, 0x0B1220)                                   # background
-text("MIC LEVEL", W // 2, 36, 0xFFFFFF, 4, (0.5, 0.5))
-text("ESP32-S31-Korvo-1  /  ES8389  /  16 kHz", W // 2, 76, 0x7F9ACB, 2, (0.5, 0.5))
+rect(0, 0, W, H, 0x0B1220)
+# drawing canvas: 2-bit bitmap, 4 colours + transparent background
+CANVAS_Y = 60
+canvas = displayio.Bitmap(W, H - CANVAS_Y - 90, 8)
+cpal = pal(0x000000, 0xFFFFFF, 0xF1C40F, 0x2ECC71, 0x3498DB, 0xE74C3C, 0x9B59B6, 0xE67E22)
+cpal.make_transparent(0)
+rect(0, CANVAS_Y, W, canvas.height, 0x14213D)
+root.append(displayio.TileGrid(canvas, pixel_shader=cpal, x=0, y=CANVAS_Y))
 
-TOP, BOTTOM = 120, H - 70
-SPAN = BOTTOM - TOP
-BAR_W = 150
-GREEN, YELLOW, RED = 0x2ECC71, 0xF1C40F, 0xE74C3C
-LEVEL_Y = -20, -6                                            # yellow starts at -20 dB, red at -6 dB
+title = text("TOUCH + BUTTONS", W // 2, 24, 0xFFFFFF, 3)
+coords = text("touch the screen", W - 12, 24, 0x7F9ACB, 2, (1.0, 0.5))
+status = text("", 12, 24, 0x7F9ACB, 2, (0.0, 0.5))
 
-
-def db_to_y(db):
-    db = max(MIN_DB, min(MAX_DB, db))
-    return int(BOTTOM - (db - MIN_DB) / (MAX_DB - MIN_DB) * SPAN)
-
-
-# dB scale between the bars
-for db in range(MIN_DB, MAX_DB + 1, 10):
-    y = db_to_y(db)
-    rect(W // 2 - 60, y, 120, 1, 0x2A3A55)
-    text("%d" % db, W // 2, y, 0x7F9ACB, 2, (0.5, 0.5))
-
-channels = []
-for name, cx in (("LEFT", W // 2 - 220), ("RIGHT", W // 2 + 220)):
-    x = cx - BAR_W // 2
-    rect(x - 4, TOP - 4, BAR_W + 8, SPAN + 8, 0x1C2A44)       # well
-    segs = {
-        "g": rect(x, BOTTOM, BAR_W, 1, GREEN),
-        "y": rect(x, BOTTOM, BAR_W, 1, YELLOW),
-        "r": rect(x, BOTTOM, BAR_W, 1, RED),
-    }
-    peak = rect(x, BOTTOM, BAR_W, 3, 0xFFFFFF)
-    text(name, cx, TOP - 24, 0xFFFFFF, 2, (0.5, 0.5))
-    readout = text("-inf dB", cx, BOTTOM + 36, 0xFFFFFF, 3, (0.5, 0.5))
-    channels.append({"segs": segs, "peak": peak, "readout": readout, "peak_db": MIN_DB, "peak_t": 0, "shown": -99})
+# on-screen buttons along the bottom
+BTN_Y, BTN_H = H - 78, 64
+names = ("PLAY", "SET", "VOL-", "VOL+")
+buttons = []
+bw = (W - 5 * 16) // 4
+for i, name in enumerate(names):
+    x = 16 + i * (bw + 16)
+    r = rect(x, BTN_Y, bw, BTN_H, 0x1C2A44)
+    text(name, x + bw // 2, BTN_Y + BTN_H // 2, 0xFFFFFF, 3)
+    buttons.append((name, x, BTN_Y, bw, BTN_H, r))
+last_hit = text("", W // 2, BTN_Y - 18, 0xF1C40F, 2)
 
 
-def set_bar(ch, db):
-    y_top = db_to_y(db)
-    y_yel, y_red = db_to_y(LEVEL_Y[0]), db_to_y(LEVEL_Y[1])
-    # green: from bottom up to min(top, yellow threshold); yellow: between thresholds; red: above
-    g_top = max(y_top, y_yel); yl_top = max(y_top, y_red)
-    segs = ch["segs"]
-    segs["g"].y = g_top;  segs["g"].height = max(1, BOTTOM - g_top)
-    segs["y"].y = yl_top; segs["y"].height = max(1, y_yel - yl_top) if y_top < y_yel else 1
-    segs["r"].y = y_top;  segs["r"].height = max(1, y_red - y_top) if y_top < y_red else 1
-    if y_top >= y_yel:
-        segs["y"].y = BOTTOM; segs["r"].y = BOTTOM
-    elif y_top >= y_red:
-        segs["r"].y = BOTTOM
+def paint(x, y, color, size=4):
+    for dx in range(-size, size + 1):
+        for dy in range(-size, size + 1):
+            cx, cy = x + dx, y - CANVAS_Y + dy
+            if 0 <= cx < canvas.width and 0 <= cy < canvas.height:
+                canvas[cx, cy] = color
 
 
-def to_db(rms):
-    return 20 * math.log(rms / 32768, 10) if rms > 1 else MIN_DB
+def clear():
+    canvas.fill(0)
 
 
-def levels(buf):
-    """(rms_L, rms_R, peak_L, peak_R) from interleaved int16."""
-    if np is not None:
-        a = np.frombuffer(buf, dtype=np.int16)
-        l = np.array(a[0::2], dtype=np.float); r = np.array(a[1::2], dtype=np.float)
-        return (math.sqrt(np.mean(l * l)), math.sqrt(np.mean(r * r)),
-                float(np.max(abs(l))), float(np.max(abs(r))))
-    acc = [0, 0]; pk = [0, 0]
-    for i in range(0, len(buf), 2):
-        for c in (0, 1):
-            v = buf[i + c]; acc[c] += v * v
-            if v < 0: v = -v
-            if v > pk[c]: pk[c] = v
-    n = len(buf) // 2
-    return math.sqrt(acc[0] / n), math.sqrt(acc[1] / n), pk[0], pk[1]
+tp = korvo1.touch()              # add swap_xy=True / flip_x=True / flip_y=True here if the dot
+pid, fw = tp.product_id()        # lands in the wrong place; the raw x,y shows top-right
+boot = korvo1.BootButton()
+ladder = korvo1.LadderButtons()
+status.text = "GT%s fw %06x" % (pid, fw)
+print("touch controller GT%s firmware %06x" % (pid, fw))
 
-
-status = text("starting codec...", W // 2, H - 18, 0x7F9ACB, 2, (0.5, 0.5))
-codec = korvo1.codec(RATE, 16)
-buf = array.array("h", [0] * (CHUNK * 2))
 display.auto_refresh = False
 display.refresh()
-
-with korvo1.Microphone(codec, RATE, gain_db=30, stereo=True) as mic:
-    status.text = "gain 30 dB   |   bars = RMS, white line = peak hold"
-    frames = 0
-    t_fps = time.monotonic()
-    while True:
-        mic.record(buf)
-        rms_l, rms_r, pk_l, pk_r = levels(buf)
-        now = time.monotonic()
-        for ch, rms, pk in ((channels[0], rms_l, pk_l), (channels[1], rms_r, pk_r)):
-            db = to_db(rms)
-            set_bar(ch, db)
-            pdb = to_db(pk)
-            if pdb >= ch["peak_db"] or now - ch["peak_t"] > 1.5:
-                ch["peak_db"] = pdb; ch["peak_t"] = now
-            else:
-                ch["peak_db"] -= 0.8                           # slow fall after hold
-            ch["peak"].y = db_to_y(ch["peak_db"]) - 1
-            if abs(db - ch["shown"]) >= 0.5:
-                ch["readout"].text = "%5.1f dB" % db if db > MIN_DB else " -inf dB"
-                ch["shown"] = db
-        loud = max(to_db(rms_l), to_db(rms_r))
-        px[0] = RED if loud > LEVEL_Y[1] else YELLOW if loud > LEVEL_Y[0] else GREEN
-        display.refresh()
-        frames += 1
-        if frames % 40 == 0:
-            print("L %5.1f dB  R %5.1f dB  (%.1f updates/s)" % (to_db(rms_l), to_db(rms_r), 40 / (now - t_fps)))
-            t_fps = now
+active = None
+hit_t = 0
+ladder_shown = "x"
+while True:
+    pts = tp.poll()
+    if pts is not None:
+        for tid, x, y, strength in pts:
+            color = 1 + (tid % 7)
+            if y >= CANVAS_Y and y < CANVAS_Y + canvas.height:
+                paint(x, y, color)
+            for name, bx, by, bwid, bh, r in buttons:
+                if bx <= x < bx + bwid and by <= y < by + bh and active != name:
+                    active = name
+                    hit_t = time.monotonic()
+                    r.pixel_shader[0] = 0xF1C40F
+                    last_hit.text = "on-screen %s" % name
+                    print("on-screen button:", name)
+                    px[0] = (255, 160, 0)
+        if pts:
+            coords.text = "x=%d y=%d  (%d touch%s)" % (pts[0][1], pts[0][2], len(pts), "" if len(pts) == 1 else "es")
+        elif active:
+            pass
+    if active and time.monotonic() - hit_t > 0.25:
+        for name, bx, by, bwid, bh, r in buttons:
+            r.pixel_shader[0] = 0x1C2A44
+        active = None
+        px[0] = (0, 0, 0)
+    for ev in boot.events():
+        print("BOOT", ev)
+        if ev == "pressed":
+            clear()
+            last_hit.text = "BOOT: canvas cleared"
+            px[0] = (0, 80, 255)
+        else:
+            px[0] = (0, 0, 0)
+    grp = ladder.read()
+    if grp != ladder_shown:
+        ladder_shown = grp
+        status.text = "ladder: %s" % (grp or "none")
+        if grp:
+            print("physical button group:", grp)
+    display.refresh()
+    time.sleep(0.01)

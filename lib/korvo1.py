@@ -83,3 +83,59 @@ class Microphone:
         self.codec.adc_enable(False)
         self.mic.deinit()
         self.mic = None
+
+
+# ---------------------------------------------------------------- inputs
+BOOT_BUTTON = mcu.pin.GPIO61
+TOUCH_ADDRESS = 0x14          # GT1151/GT1158 on the LCD subboard
+
+
+def touch(**kwargs):
+    """GT1151 touch controller on the shared I2C bus. kwargs: swap_xy, flip_x, flip_y."""
+    import gt1151
+    return gt1151.GT1151(board.I2C(), TOUCH_ADDRESS, **kwargs)
+
+
+class BootButton:
+    """Debounced BOOT button via keypad. events() yields 'pressed' / 'released'."""
+
+    def __init__(self):
+        import keypad
+        self.keys = keypad.Keys((BOOT_BUTTON,), value_when_pressed=False, pull=True)
+
+    def events(self):
+        ev = self.keys.events.get()
+        while ev:
+            yield "pressed" if ev.pressed else "released"
+            ev = self.keys.events.get()
+
+    def deinit(self):
+        self.keys.deinit()
+
+
+class LadderButtons:
+    """Best-effort reading of the PLAY/SET/VOL-/VOL+ resistor ladder on GPIO42.
+
+    This CircuitPython build has no `analogio` for the S31 (no ADC calibration in ESP-IDF yet), so
+    the pin can only be read digitally. That separates three states, not five:
+      None          nothing pressed (node ~3.3 V)
+      "PLAY/SET"    a low-voltage button (0.3-0.7 V) -> reads low even without a pull
+      "VOL-/VOL+"   a mid-voltage button (1.2-1.7 V) -> reads high alone, low with the pull-down
+    Replace with analogio.AnalogIn(GPIO42) once a build enables it (thresholds in the README)."""
+
+    def __init__(self):
+        import digitalio
+        self.pin = digitalio.DigitalInOut(ADC_BUTTONS)
+        self._dio = digitalio
+
+    def read(self):
+        self.pin.switch_to_input(pull=None)
+        if not self.pin.value:
+            return "PLAY/SET"
+        self.pin.switch_to_input(pull=self._dio.Pull.DOWN)
+        low = not self.pin.value
+        self.pin.switch_to_input(pull=None)
+        return "VOL-/VOL+" if low else None
+
+    def deinit(self):
+        self.pin.deinit()
