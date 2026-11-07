@@ -1,172 +1,176 @@
-# Touch + buttons demo for the ESP32-S31-Korvo-1 with the 800x480 touch LCD.
-# - draw on the canvas with your finger (up to 5 touches, colour per finger)
-# - on-screen PLAY plays a chime, VOL-/VOL+ change the speaker volume, SET cycles the brush size
-# - BOOT button clears the canvas; the physical ladder buttons show their detected group
-# Needs /lib/gt1151.py, /lib/korvo1.py, /lib/adafruit_display_text/.
-import time, array
-import board, displayio, terminalio, vectorio, neopixel, audiocore
-from adafruit_display_text import label
-from ulab import numpy as np
+# SPDX-FileCopyrightText: 2026 Tim Cocks for Adafruit Industries (original Metro RP2350 demo)
+# SPDX-License-Identifier: MIT
+"""PixelDust digital sand on the ESP32-S31-Korvo-1's 800x480 display.
+
+Port of Adafruit's "PixelDust digital sand for CircuitPython" (Metro RP2350 version):
+  https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython
+Physics are the unmodified viper kernels in lib/sand_viper.mpy, compiled for this chip with
+  mpy-cross -march=rv32imc sand/sand_viper.py -o lib/sand_viper.mpy
+Differences from the original: the picogame Scene/Canvas is replaced by a displayio Bitmap the
+kernels write into directly, and the accelerometer (this board has none) is replaced by the touch
+screen: touch anywhere and the sand falls toward your finger. With no finger, gravity slowly
+rotates. BOOT re-scatters the sand.
+"""
+import gc, math, random, time
+import board, displayio
+import sand_viper
+import logo
 import korvo1
 
-RATE = 16000
+SCALE = 4                  # pixels per grain; 800x480 at 4 -> 200x120 cells
+FILL = 0.15                # fraction of cells holding a grain
+STRIPES = 6                # rainbow bands at start; 0 = scattered colours
+MAX_SPEED = 5              # cells per frame
+MAX_FPS = 45
+BACKGROUND_RGB = (0, 0, 0)
+LOGO_RGB = (255, 255, 255)
+LOGO_SCALE = 3             # logo cells per logo pixel (40x40 logo -> 120x120 cells)
 
 
-def chime(volume=9000):
-    """Two-tone chime, stereo int16, with 0.35 s of lead-in silence so the codec's wake-up ramp
-    never clips the start."""
-    n = int(RATE * 0.6)
-    t = np.arange(n) / RATE
-    env = np.minimum(np.minimum(np.arange(n) / 300, (n - np.arange(n)) / 300), 1.0)
-    a = env * (np.sin(2 * np.pi * 523 * t) + np.sin(2 * np.pi * 784 * t)) * 0.5
-    b = env * (np.sin(2 * np.pi * 659 * t) + np.sin(2 * np.pi * 988 * t)) * 0.5
-    mono = np.concatenate((np.zeros(int(RATE * 0.35)), a, b)) * volume
-    stereo = np.zeros(2 * len(mono))
-    stereo[0::2] = mono
-    stereo[1::2] = mono
-    return array.array("h", np.array(stereo, dtype=np.int16))
+def rgb565(r, g, b):
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
+
+BACKGROUND_COLOR = rgb565(*BACKGROUND_RGB)
 display = board.DISPLAY
-W, H = display.width, display.height
-px = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.3)
+screen_width, screen_height = display.width, display.height
+GRID_WIDTH, GRID_HEIGHT = screen_width // SCALE, screen_height // SCALE
+GRAIN_COUNT = int(GRID_WIDTH * GRID_HEIGHT * FILL)
 
+# -- display: one RGB565 bitmap the kernels write straight into --------------------------
+gc.collect()
+bitmap = displayio.Bitmap(GRID_WIDTH * SCALE, GRID_HEIGHT * SCALE, 65536)
 root = displayio.Group()
+root.append(displayio.TileGrid(bitmap, pixel_shader=displayio.ColorConverter(input_colorspace=displayio.Colorspace.RGB565),
+                               x=(screen_width - GRID_WIDTH * SCALE) // 2, y=(screen_height - GRID_HEIGHT * SCALE) // 2))
 display.root_group = root
-
-
-def pal(*colors):
-    p = displayio.Palette(len(colors))
-    for i, c in enumerate(colors):
-        p[i] = c
-    return p
-
-
-def rect(x, y, w, h, color):
-    r = vectorio.Rectangle(pixel_shader=pal(color), width=w, height=h, x=x, y=y)
-    root.append(r)
-    return r
-
-
-def text(s, x, y, color=0xFFFFFF, scale=2, anchor=(0.5, 0.5)):
-    t = label.Label(terminalio.FONT, text=s, color=color, scale=scale)
-    t.anchor_point = anchor
-    t.anchored_position = (x, y)
-    root.append(t)
-    return t
-
-
-rect(0, 0, W, H, 0x0B1220)
-# drawing canvas: 2-bit bitmap, 4 colours + transparent background
-CANVAS_Y = 60
-canvas = displayio.Bitmap(W, H - CANVAS_Y - 90, 8)
-cpal = pal(0x000000, 0xFFFFFF, 0xF1C40F, 0x2ECC71, 0x3498DB, 0xE74C3C, 0x9B59B6, 0xE67E22)
-cpal.make_transparent(0)
-rect(0, CANVAS_Y, W, canvas.height, 0x14213D)
-root.append(displayio.TileGrid(canvas, pixel_shader=cpal, x=0, y=CANVAS_Y))
-
-title = text("TOUCH + BUTTONS", W // 2, 24, 0xFFFFFF, 3)
-coords = text("touch the screen", W - 12, 24, 0x7F9ACB, 2, (1.0, 0.5))
-status = text("", 12, 24, 0x7F9ACB, 2, (0.0, 0.5))
-
-# on-screen buttons along the bottom
-BTN_Y, BTN_H = H - 78, 64
-names = ("PLAY", "SET", "VOL-", "VOL+")
-buttons = []
-bw = (W - 5 * 16) // 4
-for i, name in enumerate(names):
-    x = 16 + i * (bw + 16)
-    r = rect(x, BTN_Y, bw, BTN_H, 0x1C2A44)
-    text(name, x + bw // 2, BTN_Y + BTN_H // 2, 0xFFFFFF, 3)
-    buttons.append((name, x, BTN_Y, bw, BTN_H, r))
-last_hit = text("", W // 2, BTN_Y - 18, 0xF1C40F, 2)
-
-
-def paint(x, y, color, size=4):
-    size = brush_sizes[brush] if "brush_sizes" in globals() else size
-    for dx in range(-size, size + 1):
-        for dy in range(-size, size + 1):
-            cx, cy = x + dx, y - CANVAS_Y + dy
-            if 0 <= cx < canvas.width and 0 <= cy < canvas.height:
-                canvas[cx, cy] = color
-
-
-def clear():
-    canvas.fill(0)
-
-
-tp = korvo1.touch()              # raw panel coords match the display; flags available if a panel differs
-pid, fw = tp.product_id()
-boot = korvo1.BootButton()
-ladder = korvo1.LadderButtons()
-status.text = "GT%s fw %06x" % (pid, fw)
-print("touch controller GT%s firmware %06x" % (pid, fw))
-
-codec = korvo1.codec(RATE, 16)
-volume_db = -6
-spk = korvo1.Speaker(codec, volume_db).__enter__()     # keep the I2S output open for the whole app
-sample = audiocore.RawSample(chime(), channel_count=2, sample_rate=RATE)
-brush_sizes = (2, 4, 7, 11)
-brush = 1
-vol_text = text("vol %d dB" % volume_db, W // 2, BTN_Y - 40, 0x7F9ACB, 2)
-
-
-def on_button(name):
-    global volume_db, brush
-    if name == "PLAY":
-        spk.play(sample)
-    elif name == "VOL+" or name == "VOL-":
-        volume_db = max(-40, min(6, volume_db + (3 if name == "VOL+" else -3)))
-        codec.dac_volume(volume_db)
-        vol_text.text = "vol %d dB" % volume_db
-        if not spk.out.playing:
-            spk.play(sample)                               # audible confirmation of the new level
-    elif name == "SET":
-        brush = (brush + 1) % len(brush_sizes)
-        vol_text.text = "brush %d px" % (brush_sizes[brush] * 2 + 1)
-
 display.auto_refresh = False
-display.refresh()
-active = None
-hit_t = 0
-ladder_shown = "x"
-while True:
-    pts = tp.poll()
-    if pts is not None:
-        for tid, x, y, strength in pts:
-            color = 1 + (tid % 7)
-            if y >= CANVAS_Y and y < CANVAS_Y + canvas.height:
-                paint(x, y, color)
-            for name, bx, by, bwid, bh, r in buttons:
-                if bx <= x < bx + bwid and by <= y < by + bh and active != name:
-                    active = name
-                    hit_t = time.monotonic()
-                    r.pixel_shader[0] = 0xF1C40F
-                    last_hit.text = "on-screen %s" % name
-                    print("on-screen button:", name, "raw", tp.raw, "mapped", (x, y), "rect x %d..%d" % (bx, bx + bwid))
-                    px[0] = (255, 160, 0)
-                    on_button(name)
-        if pts:
-            coords.text = "x=%d y=%d  raw %d,%d" % (pts[0][1], pts[0][2], tp.raw[0], tp.raw[1])
-        elif active:
-            pass
-    if active and time.monotonic() - hit_t > 0.25:
-        for name, bx, by, bwid, bh, r in buttons:
-            r.pixel_shader[0] = 0x1C2A44
-        active = None
-        px[0] = (0, 0, 0)
-    for ev in boot.events():
-        print("BOOT", ev)
-        if ev == "pressed":
-            clear()
-            last_hit.text = "BOOT: canvas cleared"
-            px[0] = (0, 80, 255)
-        else:
-            px[0] = (0, 0, 0)
-    grp = ladder.read()
-    if grp != ladder_shown:
-        ladder_shown = grp
-        status.text = "ladder: %s" % (grp or "none")
-        if grp:
-            print("physical button group:", grp)
+
+# -- sand state: same layout as sand_viper.new(), but `pixels` is the bitmap ----------------
+import array
+logo_w, logo_h = logo.WIDTH * LOGO_SCALE, logo.HEIGHT * LOGO_SCALE
+grid = bytearray(GRID_WIDTH * GRID_HEIGHT)
+grains = array.array("i", [0]) * (5 * GRAIN_COUNT)
+params = array.array("i", [0]) * (sand_viper.PARAM_BACKDROP_COLORS + logo_w * logo_h)
+params[sand_viper.PARAM_GRID_WIDTH] = GRID_WIDTH
+params[sand_viper.PARAM_GRID_HEIGHT] = GRID_HEIGHT
+params[sand_viper.PARAM_GRAIN_COUNT] = GRAIN_COUNT
+params[sand_viper.PARAM_CELL_SIZE] = SCALE
+params[sand_viper.PARAM_BACKGROUND] = BACKGROUND_COLOR
+params[sand_viper.PARAM_RANDOM_STATE] = random.getrandbits(30)
+params[sand_viper.PARAM_JITTER_RANGE] = 1
+params[sand_viper.PARAM_MAX_SPEED] = int(MAX_SPEED * 256)
+pixels = bitmap
+
+
+def blend(coverage):
+    w = coverage + 1
+    return rgb565(*(((lc * w + bc * (257 - w)) >> 8) for lc, bc in zip(LOGO_RGB, BACKGROUND_RGB)))
+
+
+# Scale the 40x40 logo up by LOGO_SCALE cells per logo pixel.
+mask_row_bytes = (logo.WIDTH + 7) // 8
+colors = []
+solid = bytearray(logo_w * logo_h)
+shades = [blend(c) for c in range(256)]
+for y in range(logo_h):
+    ly = y // LOGO_SCALE
+    for x in range(logo_w):
+        lx = x // LOGO_SCALE
+        colors.append(shades[logo.GRAY[ly * logo.WIDTH + lx]])
+        solid[y * logo_w + x] = 1 if logo.MASK[ly * mask_row_bytes + lx // 8] & (0x80 >> (lx & 7)) else 0
+sand_viper.backdrop(grid, params, (GRID_WIDTH - logo_w) // 2, (GRID_HEIGHT - logo_h) // 2, logo_w, logo_h, colors, solid)
+del colors, solid, shades
+
+
+def rainbow(hue):
+    s = hue * 6
+    sector = int(s)
+    rising = int((s - sector) * 255)
+    falling = 255 - rising
+    r, g, b = ((255, rising, 0), (falling, 255, 0), (0, 255, rising), (0, falling, 255), (rising, 0, 255), (255, 0, falling))[sector % 6]
+    return rgb565(r, g, b)
+
+
+def scatter():
+    if STRIPES:
+        saved = params[sand_viper.PARAM_RANDOM_STATE]
+        sand_viper.place(grains, grid, pixels, params)
+        for i in range(GRAIN_COUNT):
+            stripe = (grains[5 * i + 1] >> 8) * STRIPES // GRID_HEIGHT
+            grains[5 * i + 4] = rainbow(stripe / max(STRIPES - 1, 1) * 5 / 6)
+        params[sand_viper.PARAM_RANDOM_STATE] = saved
+    else:
+        for i in range(GRAIN_COUNT):
+            grains[5 * i + 4] = rainbow(i / GRAIN_COUNT)
+    sand_viper.place(grains, grid, pixels, params)
+    bitmap.dirty()
     display.refresh()
-    time.sleep(0.01)
+
+
+scatter()
+
+# -- "accelerometer": touch screen, or slowly rotating gravity -----------------------------
+touch = korvo1.touch()
+boot = korvo1.BootButton()
+GRAVITY_UNITS = 32          # 1 G in the kernel's units (raw 4 G counts / 256)
+finger = None
+
+
+def read_acceleration():
+    """(accel_x, accel_y, jitter_range) in grain units per frame, like the original."""
+    if finger:
+        fx = (finger[0] - screen_width / 2) / (screen_width / 2)     # -1 .. 1
+        fy = (finger[1] - screen_height / 2) / (screen_height / 2)
+        mag = min(1.0, math.sqrt(fx * fx + fy * fy) * 1.5)
+        ang = math.atan2(fy, fx)
+        ax, ay = math.cos(ang) * mag, math.sin(ang) * mag
+        flat = 1.0 - mag
+    else:
+        angle = time.monotonic() * 0.4
+        ax, ay, flat = 0.9 * math.cos(angle), -0.9 * math.sin(angle), 0.45
+    flatness = int(abs(flat) * 4)
+    jitter = 1 if flatness >= 3 else 4 - flatness
+    return int(ax * GRAVITY_UNITS) - jitter, int(ay * GRAVITY_UNITS) - jitter, 2 * jitter + 1
+
+
+print("%dx%d, %d grains on %dx%d cells, viper arch ok" % (screen_width, screen_height, GRAIN_COUNT, GRID_WIDTH, GRID_HEIGHT))
+frame_ns = 1000000000 // MAX_FPS
+next_frame_ns = time.monotonic_ns()
+frames = step_ns = draw_ns = 0
+report_ns = next_frame_ns + 2000000000
+poll_every = 3
+n = 0
+while True:
+    n += 1
+    if n % poll_every == 0:                       # touch poll is ~1 ms of I2C; not every frame
+        pts = touch.poll()
+        if pts is not None:
+            finger = (pts[0][1], pts[0][2]) if pts else None
+    for ev in boot.events():
+        if ev == "pressed":
+            scatter()
+    accel_x, accel_y, jitter_range = read_acceleration()
+    params[sand_viper.PARAM_ACCEL_X] = accel_x
+    params[sand_viper.PARAM_ACCEL_Y] = accel_y
+    params[sand_viper.PARAM_JITTER_RANGE] = jitter_range
+
+    t0 = time.monotonic_ns()
+    if sand_viper.step(grains, grid, pixels, params):
+        bitmap.dirty(params[sand_viper.PARAM_DIRTY_LEFT] * SCALE, params[sand_viper.PARAM_DIRTY_TOP] * SCALE,
+                     params[sand_viper.PARAM_DIRTY_RIGHT] * SCALE, params[sand_viper.PARAM_DIRTY_BOTTOM] * SCALE)
+    t1 = time.monotonic_ns()
+    display.refresh()
+    t2 = time.monotonic_ns()
+    frames += 1; step_ns += t1 - t0; draw_ns += t2 - t1
+    if t2 >= report_ns:
+        print("%d fps, step %d us, draw %d us, gravity (%d, %d)%s" % (frames // 2, step_ns // frames // 1000, draw_ns // frames // 1000,
+                                                                       accel_x, accel_y, " finger" if finger else ""))
+        frames = step_ns = draw_ns = 0
+        report_ns += 2000000000
+    next_frame_ns += frame_ns
+    wait_ns = next_frame_ns - time.monotonic_ns()
+    if wait_ns > 0:
+        time.sleep(wait_ns / 1e9)
+    else:
+        next_frame_ns = time.monotonic_ns()

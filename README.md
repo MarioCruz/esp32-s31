@@ -70,8 +70,9 @@ If auto-reset into download mode fails: hold **Boot**, press and release **RST**
 
 ## Files in this folder
 - `lib/` mirrors what is on the board's `/lib`: `neopixel.mpy` and `adafruit_display_text/` from the 11.x-mpy bundle (20261106).
-- `blink.py` needs no libraries. `mic_meter.py` (stereo level meter) and `touch_demo.py` (touch canvas +
-  buttons) are the demos; `code.py` is whichever one is currently installed.
+- `blink.py` needs no libraries. Demos: `mic_meter.py` (stereo level meter), `touch_demo.py` (touch
+  canvas + buttons), `sand.py` (PixelDust sand); `code.py` is whichever one is currently installed.
+- `sand/` holds the viper physics source and `build.sh` to compile it; `lib/sand_viper.mpy` is the result.
 
 ## First program
 ```sh
@@ -121,6 +122,27 @@ Hardware facts that matter (all learned the hard way):
   not an option either (`memorymap` only exposes the RTC range). When a build enables `analogio`, the
   per-button windows from Espressif's BSP are (mV): SET 244-444, PLAY 643-843, VOL- 1118-1318, VOL+ 1600-1800.
   Until then the on-screen buttons in `touch_demo.py` are the practical replacement.
+
+## PixelDust sand demo (`sand.py`)
+Port of Adafruit's [PixelDust digital sand](https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython)
+(Metro RP2350 version) to this board: 3600 rainbow grains on a 200x120 grid at 4 px per grain, the
+Adafruit logo as an obstacle, 16-21 fps. Touch the screen and the sand falls toward your finger;
+with no finger, gravity slowly rotates. BOOT re-scatters.
+```sh
+curl -L -o sand/mpy-cross https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-11.0.0-alpha.2.static
+chmod +x sand/mpy-cross
+./sand/build.sh            # mpy-cross -march=rv32imc sand/sand_viper.py -> lib/sand_viper.mpy, pushes it + lib/logo.py
+./put.py sand.py /dev/ttyUSB0 code.py
+```
+How it differs from the original, and why:
+- The physics (`sand/sand_viper.py`, Adafruit's unmodified `@micropython.viper` kernels) **must be
+  pre-compiled** for `rv32imc`: this build cannot compile viper/native code on the device, but it does load
+  native `.mpy` files (`CIRCUITPY_LOAD_NATIVE` is on for espressif). The mpy-cross must match the
+  firmware version exactly (mpy format 6.3 here).
+- `picogame` (the original's renderer) is not in this build, so the kernels write straight into a
+  full-screen RGB565 `displayio.Bitmap` (768 KB, fine with 16 MB PSRAM) and `Bitmap.dirty()` marks the
+  rectangle `step()` reports. Drawing costs ~25 ms/frame; the viper step ~20-30 ms.
+- No accelerometer on this board, so the touch screen supplies the tilt vector.
 
 ## Tools
 - `put.py local [port] [remote]` copies a file (creates folders, CRC-verified, reloads only for code.py/boot.py).
