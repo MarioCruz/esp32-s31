@@ -1,12 +1,30 @@
 # Touch + buttons demo for the ESP32-S31-Korvo-1 with the 800x480 touch LCD.
 # - draw on the canvas with your finger (up to 5 touches, colour per finger)
-# - four on-screen buttons stand in for PLAY / SET / VOL- / VOL+
+# - on-screen PLAY plays a chime, VOL-/VOL+ change the speaker volume, SET cycles the brush size
 # - BOOT button clears the canvas; the physical ladder buttons show their detected group
 # Needs /lib/gt1151.py, /lib/korvo1.py, /lib/adafruit_display_text/.
-import time
-import board, displayio, terminalio, vectorio, neopixel
+import time, array
+import board, displayio, terminalio, vectorio, neopixel, audiocore
 from adafruit_display_text import label
+from ulab import numpy as np
 import korvo1
+
+RATE = 16000
+
+
+def chime(volume=9000):
+    """Two-tone chime, stereo int16, with 0.35 s of lead-in silence so the codec's wake-up ramp
+    never clips the start."""
+    n = int(RATE * 0.6)
+    t = np.arange(n) / RATE
+    env = np.minimum(np.minimum(np.arange(n) / 300, (n - np.arange(n)) / 300), 1.0)
+    a = env * (np.sin(2 * np.pi * 523 * t) + np.sin(2 * np.pi * 784 * t)) * 0.5
+    b = env * (np.sin(2 * np.pi * 659 * t) + np.sin(2 * np.pi * 988 * t)) * 0.5
+    mono = np.concatenate((np.zeros(int(RATE * 0.35)), a, b)) * volume
+    stereo = np.zeros(2 * len(mono))
+    stereo[0::2] = mono
+    stereo[1::2] = mono
+    return array.array("h", np.array(stereo, dtype=np.int16))
 
 display = board.DISPLAY
 W, H = display.width, display.height
@@ -64,6 +82,7 @@ last_hit = text("", W // 2, BTN_Y - 18, 0xF1C40F, 2)
 
 
 def paint(x, y, color, size=4):
+    size = brush_sizes[brush] if "brush_sizes" in globals() else size
     for dx in range(-size, size + 1):
         for dy in range(-size, size + 1):
             cx, cy = x + dx, y - CANVAS_Y + dy
@@ -75,12 +94,35 @@ def clear():
     canvas.fill(0)
 
 
-tp = korvo1.touch()              # add swap_xy=True / flip_x=True / flip_y=True here if the dot
-pid, fw = tp.product_id()        # lands in the wrong place; the raw x,y shows top-right
+tp = korvo1.touch()              # flip_x is the board default; add swap_xy/flip_y if still wrong
+pid, fw = tp.product_id()
 boot = korvo1.BootButton()
 ladder = korvo1.LadderButtons()
 status.text = "GT%s fw %06x" % (pid, fw)
 print("touch controller GT%s firmware %06x" % (pid, fw))
+
+codec = korvo1.codec(RATE, 16)
+volume_db = -6
+spk = korvo1.Speaker(codec, volume_db).__enter__()     # keep the I2S output open for the whole app
+sample = audiocore.RawSample(chime(), channel_count=2, sample_rate=RATE)
+brush_sizes = (2, 4, 7, 11)
+brush = 1
+vol_text = text("vol %d dB" % volume_db, W // 2, BTN_Y - 40, 0x7F9ACB, 2)
+
+
+def on_button(name):
+    global volume_db, brush
+    if name == "PLAY":
+        spk.play(sample)
+    elif name == "VOL+" or name == "VOL-":
+        volume_db = max(-40, min(6, volume_db + (3 if name == "VOL+" else -3)))
+        codec.dac_volume(volume_db)
+        vol_text.text = "vol %d dB" % volume_db
+        if not spk.out.playing:
+            spk.play(sample)                               # audible confirmation of the new level
+    elif name == "SET":
+        brush = (brush + 1) % len(brush_sizes)
+        vol_text.text = "brush %d px" % (brush_sizes[brush] * 2 + 1)
 
 display.auto_refresh = False
 display.refresh()
@@ -102,6 +144,7 @@ while True:
                     last_hit.text = "on-screen %s" % name
                     print("on-screen button:", name)
                     px[0] = (255, 160, 0)
+                    on_button(name)
         if pts:
             coords.text = "x=%d y=%d  (%d touch%s)" % (pts[0][1], pts[0][2], len(pts), "" if len(pts) == 1 else "es")
         elif active:

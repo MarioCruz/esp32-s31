@@ -90,10 +90,11 @@ BOOT_BUTTON = mcu.pin.GPIO61
 TOUCH_ADDRESS = 0x14          # GT1151/GT1158 on the LCD subboard
 
 
-def touch(**kwargs):
-    """GT1151 touch controller on the shared I2C bus. kwargs: swap_xy, flip_x, flip_y."""
+def touch(flip_x=True, flip_y=False, swap_xy=False):
+    """GT1151 touch controller on the shared I2C bus, mapped to display pixels.
+    The SUB3 panel reports x mirrored relative to the 800x480 framebuffer, hence flip_x=True."""
     import gt1151
-    return gt1151.GT1151(board.I2C(), TOUCH_ADDRESS, **kwargs)
+    return gt1151.GT1151(board.I2C(), TOUCH_ADDRESS, flip_x=flip_x, flip_y=flip_y, swap_xy=swap_xy)
 
 
 class BootButton:
