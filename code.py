@@ -21,7 +21,8 @@ SCALE = 4                  # pixels per grain; 800x480 at 4 -> 200x120 cells
 FILL = 0.15                # fraction of cells holding a grain
 STRIPES = 6                # rainbow bands at start; 0 = scattered colours
 MAX_SPEED = 5              # cells per frame
-MAX_FPS = 45
+MAX_FPS = 45               # simulation steps per second
+REFRESH_EVERY = 1          # set to 2 if the picture ever rolls (halves the PSRAM traffic from refreshes)
 BACKGROUND_RGB = (0, 0, 0)
 LOGO_RGB = (255, 255, 255)
 LOGO_SCALE = 3             # logo cells per logo pixel (40x40 logo -> 120x120 cells)
@@ -39,11 +40,16 @@ GRAIN_COUNT = int(GRID_WIDTH * GRID_HEIGHT * FILL)
 
 # -- display: one RGB565 bitmap the kernels write straight into --------------------------
 gc.collect()
+# Full-resolution RGB565 bitmap (768 KB in PSRAM) that the kernels paint SCALE x SCALE pixels per cell
+# into. A 1-px-per-cell bitmap scaled by displayio was tried: 10x slower refresh (270 ms).
+# The dot-clock panel streams its framebuffer from PSRAM and loses sync (the picture rolls) when
+# other PSRAM traffic gets heavy, so the screen is refreshed only every REFRESH_EVERY steps.
 bitmap = displayio.Bitmap(GRID_WIDTH * SCALE, GRID_HEIGHT * SCALE, 65536)
 root = displayio.Group()
 root.append(displayio.TileGrid(bitmap, pixel_shader=displayio.ColorConverter(input_colorspace=displayio.Colorspace.RGB565),
                                x=(screen_width - GRID_WIDTH * SCALE) // 2, y=(screen_height - GRID_HEIGHT * SCALE) // 2))
 display.root_group = root
+CELL_PX = SCALE
 display.auto_refresh = False
 
 # -- sand state: same layout as sand_viper.new(), but `pixels` is the bitmap ----------------
@@ -55,7 +61,7 @@ params = array.array("i", [0]) * (sand_viper.PARAM_BACKDROP_COLORS + logo_w * lo
 params[sand_viper.PARAM_GRID_WIDTH] = GRID_WIDTH
 params[sand_viper.PARAM_GRID_HEIGHT] = GRID_HEIGHT
 params[sand_viper.PARAM_GRAIN_COUNT] = GRAIN_COUNT
-params[sand_viper.PARAM_CELL_SIZE] = SCALE
+params[sand_viper.PARAM_CELL_SIZE] = CELL_PX
 params[sand_viper.PARAM_BACKGROUND] = BACKGROUND_COLOR
 params[sand_viper.PARAM_RANDOM_STATE] = random.getrandbits(30)
 params[sand_viper.PARAM_JITTER_RANGE] = 1
@@ -160,7 +166,8 @@ while True:
         bitmap.dirty(params[sand_viper.PARAM_DIRTY_LEFT] * SCALE, params[sand_viper.PARAM_DIRTY_TOP] * SCALE,
                      params[sand_viper.PARAM_DIRTY_RIGHT] * SCALE, params[sand_viper.PARAM_DIRTY_BOTTOM] * SCALE)
     t1 = time.monotonic_ns()
-    display.refresh()
+    if n % REFRESH_EVERY == 0:
+        display.refresh()
     t2 = time.monotonic_ns()
     frames += 1; step_ns += t1 - t0; draw_ns += t2 - t1
     if t2 >= report_ns:
