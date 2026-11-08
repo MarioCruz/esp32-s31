@@ -126,8 +126,10 @@ Hardware facts that matter (all learned the hard way):
 ## PixelDust sand demo (`sand.py`)
 Port of Adafruit's [PixelDust digital sand](https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython)
 (Metro RP2350 version) to this board: 3600 rainbow grains on a 200x120 grid at 4 px per grain,
-45-58 fps. Touch the screen and the sand falls toward your finger; with no finger, gravity slowly
-rotates. BOOT re-scatters (with a chime). The speakers play a low "sand hiss" whose loudness follows
+up to 60 fps. Touch the screen and the sand falls toward your finger (harder the farther from the
+centre); lift it and the sand rests at the bottom. Set `AUTO_ROTATE = True` for the original's spinning
+gravity. The tilt vector is low-pass filtered and a finger is dropped if the touch controller goes quiet
+for 0.2 s, so a missed release never leaves gravity stuck. BOOT re-scatters (with a chime). The speakers play a low "sand hiss" whose loudness follows
 how much sand is moving each frame (an `audiomixer` voice looping a filtered-noise sample, level set
 per frame). The original's logo obstacle is left out. **Volume**: the VOL-/VOL+ pair steps the level
 up one notch per press and wraps (-30 .. 0 dB); PLAY/SET toggles mute; a bar along the bottom edge

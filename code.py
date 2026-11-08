@@ -27,6 +27,10 @@ STRIPES = 6                # rainbow bands at start; 0 = scattered colours
 MAX_SPEED = 5              # cells per frame
 MAX_FPS = 60               # simulation steps per second (actual rate is limited by the physics step)
 TILT_GAIN = 2.0            # how fast gravity reaches 1 G as the finger moves away from the centre
+AUTO_ROTATE = False        # True: gravity slowly spins when nobody is touching (the original's demo mode)
+                           # False: with no finger the sand simply rests at the bottom of the screen
+GRAVITY_SMOOTHING = 0.3    # per-frame blend toward the new tilt (lower = softer changes)
+FINGER_TIMEOUT = 0.2       # s without a touch report before a finger is considered lifted
 BACKGROUND_RGB = (0, 0, 0)
 
 
@@ -192,23 +196,33 @@ touch = korvo1.touch()
 boot = korvo1.BootButton()
 GRAVITY_UNITS = 32          # 1 G in the kernel's units (raw 4 G counts / 256)
 finger = None
+finger_seen = 0.0
+grav_x, grav_y = 0.0, 1.0   # smoothed gravity direction/strength, screen axes, +y is down
 
 
 def read_acceleration():
-    """(accel_x, accel_y, jitter_range) in grain units per frame, like the original."""
+    """(accel_x, accel_y, jitter_range) in grain units per frame, like the original, but from the
+    touch screen: gravity points from the screen centre toward the finger, stronger farther out.
+    The vector is low-pass filtered so lifting or moving the finger does not jolt the sand."""
+    global grav_x, grav_y
     if finger:
         fx = (finger[0] - screen_width / 2) / (screen_width / 2)     # -1 .. 1
         fy = (finger[1] - screen_height / 2) / (screen_height / 2)
-        mag = min(1.0, math.sqrt(fx * fx + fy * fy) * TILT_GAIN)
-        ang = math.atan2(fy, fx)
-        ax, ay = math.cos(ang) * mag, math.sin(ang) * mag
-        flat = 1.0 - mag
-    else:
+        d = math.sqrt(fx * fx + fy * fy)
+        mag = min(1.0, d * TILT_GAIN)
+        tx, ty = (fx / d * mag, fy / d * mag) if d > 0.01 else (0.0, 0.0)
+    elif AUTO_ROTATE:
         angle = time.monotonic() * 0.4
-        ax, ay, flat = 0.9 * math.cos(angle), -0.9 * math.sin(angle), 0.45
-    flatness = int(abs(flat) * 4)
+        tx, ty = 0.9 * math.cos(angle), -0.9 * math.sin(angle)
+    else:
+        tx, ty = 0.0, 1.0                                          # rest: straight down
+    grav_x += (tx - grav_x) * GRAVITY_SMOOTHING
+    grav_y += (ty - grav_y) * GRAVITY_SMOOTHING
+    mag = math.sqrt(grav_x * grav_x + grav_y * grav_y)
+    # Held flat (weak tilt) the original adds little jitter; tilted hard, more. 1 .. 4
+    flatness = int((1.0 - min(1.0, mag)) * 4)
     jitter = 1 if flatness >= 3 else 4 - flatness
-    return int(ax * GRAVITY_UNITS) - jitter, int(ay * GRAVITY_UNITS) - jitter, 2 * jitter + 1
+    return int(grav_x * GRAVITY_UNITS) - jitter, int(grav_y * GRAVITY_UNITS) - jitter, 2 * jitter + 1
 
 
 print("%dx%d, %d grains on %dx%d cells, viper arch ok" % (screen_width, screen_height, GRAIN_COUNT, GRID_WIDTH, GRID_HEIGHT))
@@ -222,8 +236,11 @@ while True:
     n += 1
     if n % poll_every == 0:                       # touch poll is ~1 ms of I2C; not every frame
         pts = touch.poll()
-        if pts is not None:
+        if pts is not None:                       # a fresh report (possibly "no fingers")
             finger = (pts[0][1], pts[0][2]) if pts else None
+            finger_seen = time.monotonic()
+        elif finger and time.monotonic() - finger_seen > FINGER_TIMEOUT:
+            finger = None                         # release report missed: the controller went quiet
     for ev in boot.events():
         if ev == "pressed":
             mixer.voice[1].play(chime)
