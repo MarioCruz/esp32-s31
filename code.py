@@ -7,10 +7,14 @@ Port of Adafruit's "PixelDust digital sand for CircuitPython" (Metro RP2350 vers
 Physics are the unmodified viper kernels in lib/sand_viper.mpy, compiled for this chip with
   mpy-cross -march=rv32imc sand/sand_viper.py -o lib/sand_viper.mpy
 Differences from the original: the picogame Scene/Canvas is replaced by the LCD's own framebuffer,
-which the kernels paint directly (no displayio copy per frame), and the accelerometer (this board has none) is replaced by the touch
-screen: touch anywhere and the sand falls toward your finger. With no finger, gravity slowly
-rotates. BOOT re-scatters the sand (with a chime). The speakers play a sand hiss whose loudness
-follows how much sand is moving.
+which the kernels paint directly (no displayio copy per frame), and the accelerometer (this board
+has none) is replaced by the touch screen: touch anywhere and the sand falls toward your finger.
+With no finger, gravity slowly rotates. BOOT re-scatters the sand (with a chime). The speakers
+play a sand hiss whose loudness follows how much sand is moving.
+
+Volume: the board's VOL-/VOL+ pair steps the volume up one notch per press and wraps around at the
+top; PLAY/SET toggles mute. (This firmware has no ADC, so the four ladder buttons can only be read
+as those two pairs.) A small bar along the bottom edge shows the level; grains cannot enter it.
 """
 import gc, math, random, time
 import board, displayio
@@ -54,7 +58,9 @@ CELL_PX = SCALE
 import array
 grid = bytearray(GRID_WIDTH * GRID_HEIGHT)
 grains = array.array("i", [0]) * (5 * GRAIN_COUNT)
-params = array.array("i", [0]) * sand_viper.PARAM_BACKDROP_COLORS
+BAR_W, BAR_H = 62, 2                                   # volume bar, in cells (7 segments of 8 + gaps)
+BAR_X, BAR_Y = (GRID_WIDTH - BAR_W) // 2, GRID_HEIGHT - 1 - BAR_H
+params = array.array("i", [0]) * (sand_viper.PARAM_BACKDROP_COLORS + BAR_W * BAR_H)
 params[sand_viper.PARAM_GRID_WIDTH] = GRID_WIDTH
 params[sand_viper.PARAM_GRID_HEIGHT] = GRID_HEIGHT
 params[sand_viper.PARAM_GRAIN_COUNT] = GRAIN_COUNT
@@ -75,6 +81,45 @@ def rainbow(hue):
     return rgb565(r, g, b)
 
 
+# -- volume bar: a strip of obstacle cells the kernels never repaint, so we can draw on it ----
+VOLUME_STEPS = (-30, -24, -18, -12, -8, -4, 0)         # dB, cycled by the VOL buttons
+VOLUME_DB = -8
+volume_index = VOLUME_STEPS.index(VOLUME_DB)
+muted = False
+fb_pixels = memoryview(fb)                             # 'H' view of the RGB565 framebuffer
+BAR_ON, BAR_OFF, BAR_MUTE = rgb565(40, 210, 90), rgb565(45, 50, 70), rgb565(230, 60, 50)
+
+
+def bar_colors():
+    cols = []
+    for row in range(BAR_H):
+        for col in range(BAR_W):
+            seg, pos = divmod(col, 9)                   # 8 lit cells then a 1-cell gap
+            if pos == 8:
+                cols.append(BACKGROUND_COLOR)
+            elif muted:
+                cols.append(BAR_MUTE)
+            else:
+                cols.append(BAR_ON if seg <= volume_index else BAR_OFF)
+    return cols
+
+
+sand_viper.backdrop(grid, params, BAR_X, BAR_Y, BAR_W, BAR_H, bar_colors(), bytes([1]) * (BAR_W * BAR_H))
+
+
+def paint_bar():
+    cols = bar_colors()
+    stride = fb.width
+    for i, color in enumerate(cols):
+        params[sand_viper.PARAM_BACKDROP_COLORS + i] = color
+        row, col = divmod(i, BAR_W)
+        px, py = (BAR_X + col) * SCALE, (BAR_Y + row) * SCALE
+        for dy in range(SCALE):
+            base = (py + dy) * stride + px
+            for dx in range(SCALE):
+                fb_pixels[base + dx] = color
+
+
 def scatter():
     if STRIPES:
         saved = params[sand_viper.PARAM_RANDOM_STATE]
@@ -87,6 +132,7 @@ def scatter():
         for i in range(GRAIN_COUNT):
             grains[5 * i + 4] = rainbow(i / GRAIN_COUNT)
     sand_viper.place(grains, grid, pixels, params)
+    paint_bar()
     fb.refresh()
 
 
@@ -96,7 +142,6 @@ scatter()
 import audiocore, audiomixer
 from ulab import numpy as np
 AUDIO_RATE = 16000
-VOLUME_DB = -8
 
 
 def noise_sample(seconds=1.0):
@@ -130,6 +175,17 @@ speaker.play(mixer)
 mixer.voice[0].level = 0.0
 mixer.voice[0].play(hiss, loop=True)
 hiss_level = 0.0
+ladder = korvo1.LadderButtons()
+
+
+def apply_volume(announce=True):
+    codec.dac_volume(-95.5 if muted else VOLUME_STEPS[volume_index])
+    paint_bar()
+    fb.refresh()
+    if announce and not muted:
+        mixer.voice[1].play(chime)
+    print("volume:", "muted" if muted else "%d dB" % VOLUME_STEPS[volume_index])
+
 
 # -- "accelerometer": touch screen, or slowly rotating gravity -----------------------------
 touch = korvo1.touch()
@@ -172,6 +228,14 @@ while True:
         if ev == "pressed":
             mixer.voice[1].play(chime)
             scatter()
+    group = ladder.pressed()                          # debounced: "VOL-/VOL+", "PLAY/SET" or None
+    if group == "VOL-/VOL+":
+        muted = False
+        volume_index = (volume_index + 1) % len(VOLUME_STEPS)
+        apply_volume()
+    elif group == "PLAY/SET":
+        muted = not muted
+        apply_volume()
     accel_x, accel_y, jitter_range = read_acceleration()
     params[sand_viper.PARAM_ACCEL_X] = accel_x
     params[sand_viper.PARAM_ACCEL_Y] = accel_y

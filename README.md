@@ -129,7 +129,9 @@ Port of Adafruit's [PixelDust digital sand](https://learn.adafruit.com/pixeldust
 45-58 fps. Touch the screen and the sand falls toward your finger; with no finger, gravity slowly
 rotates. BOOT re-scatters (with a chime). The speakers play a low "sand hiss" whose loudness follows
 how much sand is moving each frame (an `audiomixer` voice looping a filtered-noise sample, level set
-per frame). The original's logo obstacle is left out.
+per frame). The original's logo obstacle is left out. **Volume**: the VOL-/VOL+ pair steps the level
+up one notch per press and wraps (-30 .. 0 dB); PLAY/SET toggles mute; a bar along the bottom edge
+shows the level (the ladder buttons can only be read as two pairs on this firmware, see above).
 ```sh
 curl -L -o sand/mpy-cross https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-11.0.0-alpha.2.static
 chmod +x sand/mpy-cross

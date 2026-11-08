@@ -130,13 +130,30 @@ class LadderButtons:
         self._dio = digitalio
 
     def read(self):
+        """Single raw reading; the ladder node has a small capacitor, so settle after each pull change."""
         self.pin.switch_to_input(pull=None)
+        time.sleep(0.0003)
         if not self.pin.value:
             return "PLAY/SET"
         self.pin.switch_to_input(pull=self._dio.Pull.DOWN)
+        time.sleep(0.0003)
         low = not self.pin.value
         self.pin.switch_to_input(pull=None)
         return "VOL-/VOL+" if low else None
+
+    def pressed(self):
+        """Debounced edge: returns the group name once per press, else None. Call every loop."""
+        g = self.read()
+        if g == getattr(self, "_cand", None):
+            self._stable = getattr(self, "_stable", 0) + 1
+        else:
+            self._cand, self._stable = g, 1
+        if self._stable == 2 and g and g != getattr(self, "_last", None):
+            self._last = g
+            return g
+        if g is None and self._stable >= 2:
+            self._last = None
+        return None
 
     def deinit(self):
         self.pin.deinit()
