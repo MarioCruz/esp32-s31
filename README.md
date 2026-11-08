@@ -125,13 +125,15 @@ Hardware facts that matter (all learned the hard way):
 
 ## PixelDust sand demo (`sand.py`)
 Port of Adafruit's [PixelDust digital sand](https://learn.adafruit.com/pixeldust-digital-sand-for-circuitpython)
-(Metro RP2350 version) to this board: 3600 rainbow grains on a 200x120 grid at 4 px per grain, the
-Adafruit logo as an obstacle, 45-58 fps. Touch the screen and the sand falls toward your finger;
-with no finger, gravity slowly rotates. BOOT re-scatters.
+(Metro RP2350 version) to this board: 3600 rainbow grains on a 200x120 grid at 4 px per grain,
+45-58 fps. Touch the screen and the sand falls toward your finger; with no finger, gravity slowly
+rotates. BOOT re-scatters (with a chime). The speakers play a low "sand hiss" whose loudness follows
+how much sand is moving each frame (an `audiomixer` voice looping a filtered-noise sample, level set
+per frame). The original's logo obstacle is left out.
 ```sh
 curl -L -o sand/mpy-cross https://adafruit-circuit-python.s3.amazonaws.com/bin/mpy-cross/linux-amd64/mpy-cross-linux-amd64-11.0.0-alpha.2.static
 chmod +x sand/mpy-cross
-./sand/build.sh            # mpy-cross -march=rv32imc sand/sand_viper.py -> lib/sand_viper.mpy, pushes it + lib/logo.py
+./sand/build.sh            # mpy-cross -march=rv32imc sand/sand_viper.py -> lib/sand_viper.mpy, pushes it
 ./put.py sand.py /dev/ttyUSB0 code.py
 ```
 How it differs from the original, and why:
@@ -146,6 +148,8 @@ How it differs from the original, and why:
   displayio is kept out of the way with `auto_refresh = False` and an empty root group.
 - If the picture ever rolls (the dot-clock panel lost sync under heavy PSRAM traffic), press RST.
 - No accelerometer on this board, so the touch screen supplies the tilt vector.
+- Audio and the viper step share the CPU: the mixer uses a 16 KB buffer so a 20-30 ms physics step
+  does not starve the I2S DMA.
 
 ## Tools
 - `put.py local [port] [remote]` copies a file (creates folders, CRC-verified, reloads only for code.py/boot.py).

@@ -9,12 +9,12 @@ Physics are the unmodified viper kernels in lib/sand_viper.mpy, compiled for thi
 Differences from the original: the picogame Scene/Canvas is replaced by the LCD's own framebuffer,
 which the kernels paint directly (no displayio copy per frame), and the accelerometer (this board has none) is replaced by the touch
 screen: touch anywhere and the sand falls toward your finger. With no finger, gravity slowly
-rotates. BOOT re-scatters the sand.
+rotates. BOOT re-scatters the sand (with a chime). The speakers play a sand hiss whose loudness
+follows how much sand is moving.
 """
 import gc, math, random, time
 import board, displayio
 import sand_viper
-import logo
 import korvo1
 
 SCALE = 4                  # pixels per grain; 800x480 at 4 -> 200x120 cells
@@ -24,8 +24,6 @@ MAX_SPEED = 5              # cells per frame
 MAX_FPS = 60               # simulation steps per second (actual rate is limited by the physics step)
 TILT_GAIN = 2.0            # how fast gravity reaches 1 G as the finger moves away from the centre
 BACKGROUND_RGB = (0, 0, 0)
-LOGO_RGB = (255, 255, 255)
-LOGO_SCALE = 3             # logo cells per logo pixel (40x40 logo -> 120x120 cells)
 
 
 def rgb565(r, g, b):
@@ -54,10 +52,9 @@ CELL_PX = SCALE
 
 # -- sand state: same layout as sand_viper.new(), but `pixels` is the LCD framebuffer -----------
 import array
-logo_w, logo_h = logo.WIDTH * LOGO_SCALE, logo.HEIGHT * LOGO_SCALE
 grid = bytearray(GRID_WIDTH * GRID_HEIGHT)
 grains = array.array("i", [0]) * (5 * GRAIN_COUNT)
-params = array.array("i", [0]) * (sand_viper.PARAM_BACKDROP_COLORS + logo_w * logo_h)
+params = array.array("i", [0]) * sand_viper.PARAM_BACKDROP_COLORS
 params[sand_viper.PARAM_GRID_WIDTH] = GRID_WIDTH
 params[sand_viper.PARAM_GRID_HEIGHT] = GRID_HEIGHT
 params[sand_viper.PARAM_GRAIN_COUNT] = GRAIN_COUNT
@@ -67,25 +64,6 @@ params[sand_viper.PARAM_RANDOM_STATE] = random.getrandbits(30)
 params[sand_viper.PARAM_JITTER_RANGE] = 1
 params[sand_viper.PARAM_MAX_SPEED] = int(MAX_SPEED * 256)
 
-
-def blend(coverage):
-    w = coverage + 1
-    return rgb565(*(((lc * w + bc * (257 - w)) >> 8) for lc, bc in zip(LOGO_RGB, BACKGROUND_RGB)))
-
-
-# Scale the 40x40 logo up by LOGO_SCALE cells per logo pixel.
-mask_row_bytes = (logo.WIDTH + 7) // 8
-colors = []
-solid = bytearray(logo_w * logo_h)
-shades = [blend(c) for c in range(256)]
-for y in range(logo_h):
-    ly = y // LOGO_SCALE
-    for x in range(logo_w):
-        lx = x // LOGO_SCALE
-        colors.append(shades[logo.GRAY[ly * logo.WIDTH + lx]])
-        solid[y * logo_w + x] = 1 if logo.MASK[ly * mask_row_bytes + lx // 8] & (0x80 >> (lx & 7)) else 0
-sand_viper.backdrop(grid, params, (GRID_WIDTH - logo_w) // 2, (GRID_HEIGHT - logo_h) // 2, logo_w, logo_h, colors, solid)
-del colors, solid, shades
 
 
 def rainbow(hue):
@@ -113,6 +91,45 @@ def scatter():
 
 
 scatter()
+
+# -- sound: a sand hiss that follows how much is moving, and a chime on re-scatter -----------
+import audiocore, audiomixer
+from ulab import numpy as np
+AUDIO_RATE = 16000
+VOLUME_DB = -8
+
+
+def noise_sample(seconds=1.0):
+    """Stereo 'brown-ish' noise: white noise through a one-pole low-pass, which sounds like sand."""
+    n = int(AUDIO_RATE * seconds)
+    out = array.array("h", [0] * (2 * n))
+    for ch in range(2):
+        acc = 0.0
+        for i in range(n):
+            acc += (random.random() - 0.5) * 0.35 - acc * 0.12
+            out[2 * i + ch] = int(max(-1.0, min(1.0, acc * 3)) * 24000)
+    return audiocore.RawSample(out, channel_count=2, sample_rate=AUDIO_RATE)
+
+
+def chime_sample():
+    n = int(AUDIO_RATE * 0.25)
+    t = np.arange(n) / AUDIO_RATE
+    env = np.minimum(np.minimum(np.arange(n) / 200, (n - np.arange(n)) / 1200), 1.0)
+    mono = env * (np.sin(2 * np.pi * 880 * t) * 0.6 + np.sin(2 * np.pi * 1320 * t) * 0.4) * 12000
+    st = np.zeros(2 * n); st[0::2] = mono; st[1::2] = mono
+    return audiocore.RawSample(array.array("h", np.array(st, dtype=np.int16)), channel_count=2, sample_rate=AUDIO_RATE)
+
+
+codec = korvo1.codec(AUDIO_RATE, 16)
+speaker = korvo1.Speaker(codec, VOLUME_DB).__enter__()
+# Big mixer buffer: the viper step blocks for 12-20 ms and audio is only refilled between frames.
+mixer = audiomixer.Mixer(voice_count=2, sample_rate=AUDIO_RATE, channel_count=2, bits_per_sample=16, samples_signed=True, buffer_size=16384)
+hiss = noise_sample()
+chime = chime_sample()
+speaker.play(mixer)
+mixer.voice[0].level = 0.0
+mixer.voice[0].play(hiss, loop=True)
+hiss_level = 0.0
 
 # -- "accelerometer": touch screen, or slowly rotating gravity -----------------------------
 touch = korvo1.touch()
@@ -153,6 +170,7 @@ while True:
             finger = (pts[0][1], pts[0][2]) if pts else None
     for ev in boot.events():
         if ev == "pressed":
+            mixer.voice[1].play(chime)
             scatter()
     accel_x, accel_y, jitter_range = read_acceleration()
     params[sand_viper.PARAM_ACCEL_X] = accel_x
@@ -160,14 +178,18 @@ while True:
     params[sand_viper.PARAM_JITTER_RANGE] = jitter_range
 
     t0 = time.monotonic_ns()
-    sand_viper.step(grains, grid, pixels, params)     # paints moved grains straight into the framebuffer
+    moved = sand_viper.step(grains, grid, pixels, params)   # paints moved grains straight into the framebuffer
     t1 = time.monotonic_ns()
     fb.refresh()                                       # cache write-back so the LCD DMA sees them
+    # hiss volume follows the share of grains that moved this frame, smoothed so it swells and fades
+    target = min(1.0, (moved / GRAIN_COUNT) * 2.5)
+    hiss_level += (target - hiss_level) * (0.25 if target > hiss_level else 0.08)
+    mixer.voice[0].level = hiss_level
     t2 = time.monotonic_ns()
     frames += 1; step_ns += t1 - t0; draw_ns += t2 - t1
     if t2 >= report_ns:
-        print("%d fps, step %d us, draw %d us, gravity (%d, %d)%s" % (frames // 2, step_ns // frames // 1000, draw_ns // frames // 1000,
-                                                                       accel_x, accel_y, " finger" if finger else ""))
+        print("%d fps, step %d us, draw %d us, gravity (%d, %d)%s, hiss %.2f, audio %s" % (frames // 2, step_ns // frames // 1000, draw_ns // frames // 1000,
+                                                                       accel_x, accel_y, " finger" if finger else "", hiss_level, "playing" if speaker.out.playing else "STOPPED"))
         frames = step_ns = draw_ns = 0
         report_ns += 2000000000
     next_frame_ns += frame_ns

@@ -12,5 +12,4 @@ MPY_CROSS="${MPY_CROSS:-sand/mpy-cross}"
 ls -la lib/sand_viper.mpy
 PORT="${1:-/dev/ttyUSB0}"
 ./put.py lib/sand_viper.mpy "$PORT" lib/sand_viper.mpy
-./put.py lib/logo.py "$PORT" lib/logo.py
 echo "now: ./run.py sand.py $PORT 60     or     ./put.py sand.py $PORT code.py"
