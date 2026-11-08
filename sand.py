@@ -191,7 +191,43 @@ def apply_volume(announce=True):
     print("volume:", "muted" if muted else "%d dB" % VOLUME_STEPS[volume_index])
 
 
-# -- "accelerometer": touch screen, or slowly rotating gravity -----------------------------
+# -- "accelerometer" -------------------------------------------------------------------------
+# The Korvo-1 has no motion sensor and no expansion header. If an MPU6050, LIS3DH or ADXL34x is
+# wired onto the I2C bus (SDA GPIO0 / SCL GPIO1) it is used like the original demo; otherwise the
+# touch screen steers gravity. SCREEN_X/SCREEN_Y map sensor axes to screen axes as (index, sign).
+SCREEN_X = (0, 1)
+SCREEN_Y = (1, -1)
+
+
+def make_accelerometer():
+    i2c = board.I2C()
+    while not i2c.try_lock():
+        pass
+    try:
+        found = i2c.scan()
+    finally:
+        i2c.unlock()
+    try:
+        if 0x68 in found or 0x69 in found:
+            import adafruit_mpu6050
+            dev = adafruit_mpu6050.MPU6050(i2c, address=0x68 if 0x68 in found else 0x69)
+            dev.accelerometer_range = adafruit_mpu6050.Range.RANGE_4_G
+            return "MPU6050", dev
+        if 0x18 in found or 0x19 in found:
+            import adafruit_lis3dh
+            dev = adafruit_lis3dh.LIS3DH_I2C(i2c, address=0x18 if 0x18 in found else 0x19)
+            dev.range = adafruit_lis3dh.RANGE_4_G
+            return "LIS3DH", dev
+        if 0x53 in found or 0x1D in found:
+            import adafruit_adxl34x
+            return "ADXL34x", adafruit_adxl34x.ADXL345(i2c, address=0x53 if 0x53 in found else 0x1D)
+    except Exception as e:                       # driver missing or sensor unhappy: fall back to touch
+        print("accelerometer found but not usable:", e)
+    return None, None
+
+
+accel_name, accelerometer = make_accelerometer()
+print("tilt source:", accel_name or "touch screen (no accelerometer on this board)")
 touch = korvo1.touch()
 boot = korvo1.BootButton()
 GRAVITY_UNITS = 32          # 1 G in the kernel's units (raw 4 G counts / 256)
@@ -205,7 +241,14 @@ def read_acceleration():
     touch screen: gravity points from the screen centre toward the finger, stronger farther out.
     The vector is low-pass filtered so lifting or moving the finger does not jolt the sand."""
     global grav_x, grav_y
-    if finger:
+    if accelerometer:
+        a = accelerometer.acceleration                                # m/s^2
+        tx = a[SCREEN_X[0]] * SCREEN_X[1] / 9.80665
+        ty = a[SCREEN_Y[0]] * SCREEN_Y[1] / 9.80665
+        m = math.sqrt(tx * tx + ty * ty)
+        if m > 1.0:
+            tx, ty = tx / m, ty / m
+    elif finger:
         fx = (finger[0] - screen_width / 2) / (screen_width / 2)     # -1 .. 1
         fy = (finger[1] - screen_height / 2) / (screen_height / 2)
         d = math.sqrt(fx * fx + fy * fy)

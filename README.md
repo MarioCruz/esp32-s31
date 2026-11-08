@@ -151,7 +151,10 @@ How it differs from the original, and why:
   Going through a `displayio.Bitmap` instead cost ~26 ms per frame and capped the demo near 20 fps.
   displayio is kept out of the way with `auto_refresh = False` and an empty root group.
 - If the picture ever rolls (the dot-clock panel lost sync under heavy PSRAM traffic), press RST.
-- No accelerometer on this board, so the touch screen supplies the tilt vector.
+- **There is no accelerometer on this board** (and no expansion header: the only connectors are USB,
+  speakers, and the LCD/camera flex cables), so physically tilting the Korvo-1 cannot move the sand.
+  The touch screen supplies the tilt vector instead. `sand.py` does auto-detect an MPU6050, LIS3DH or
+  ADXL34x if one is soldered onto the I2C bus (SDA GPIO0 / SCL GPIO1); their drivers are in `lib/`.
 - Audio and the viper step share the CPU: the mixer uses a 16 KB buffer so a 20-30 ms physics step
   does not starve the I2S DMA.
 
